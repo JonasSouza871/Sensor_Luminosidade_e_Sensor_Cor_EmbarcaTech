@@ -13,31 +13,30 @@ if (EXISTS ${picoVscode})
 endif()
 # ====================================================================================
 
-#Versão mínima do CMake requerida
+# Versão mínima do CMake requerida
 cmake_minimum_required(VERSION 3.13)
 
-#Configurações de padrões de linguagem
+# Inclui o SDK do Pico para encontrar as bibliotecas e funções necessárias
+include(pico_sdk_import.cmake)
+
+# --- Descrição do Projeto ---
+# Este projeto utiliza um microcontrolador Raspberry Pi Pico para identificar frutas
+# com base em suas cores. Ele emprega um sensor de cor (GY-33) e um sensor de 
+# luminosidade (GY-302) para capturar os dados. Os valores lidos são então 
+# comparados com um pequeno banco de dados pré-definido no código para classificar a fruta.
+
+# Define o nome do projeto
+project(pico_sensores_luz_cor C CXX ASM)
+
+# Configurações de padrões de linguagem
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-#Define o tipo de placa como Raspberry Pi Pico W
-set(PICO_BOARD pico CACHE STRING "Board type")
-
-#Inclui o SDK do Pico
-include(pico_sdk_import.cmake)
-
-#Configura o FreeRTOS
-set(FREERTOS_KERNEL_PATH "C:/Users/Jonas/FreeRTOS-Kernel")
-include(${FREERTOS_KERNEL_PATH}/portable/ThirdParty/GCC/RP2040/FreeRTOS_Kernel_import.cmake)
-
-#Define o nome do projeto
-project(RTOS_Mutex_Semaforo C CXX ASM)
-
-#Inicializa o SDK do Pico
+# Inicializa o SDK do Pico
 pico_sdk_init()
 
-#Diretórios de inclusão para headers do projeto
+# Diretórios de inclusão para headers do projeto
 include_directories(
     ${CMAKE_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/lib
@@ -45,27 +44,25 @@ include_directories(
     ${CMAKE_SOURCE_DIR}/lib/Matriz_Bibliotecas
 )
 
-#Cria o executável com os arquivos fonte
-add_executable(RTOS_Mutex_Semaforo
+# Cria o executável com os arquivos fonte
+add_executable(pico_sensores_luz_cor
     main.c
     lib/Display_Bibliotecas/ssd1306.c
     lib/Matriz_Bibliotecas/matriz_led.c
 )
 
-#Vincula as bibliotecas necessárias ao executável
-target_link_libraries(RTOS_Mutex_Semaforo
-    pico_stdlib              #Biblioteca padrão do Pico
-    hardware_i2c             #Driver I2C do Pico SDK
-    hardware_pwm             #Driver PWM do Pico SDK
-    hardware_pio             #Driver PIO do Pico SDK
-    hardware_adc             #Driver ADC do Pico SDK
-    FreeRTOS-Kernel          #Kernel do FreeRTOS
-    FreeRTOS-Kernel-Heap4    #Gerenciador de memória do FreeRTOS
+# Vincula as bibliotecas necessárias ao executável
+target_link_libraries(pico_sensores_luz_cor
+    pico_stdlib       # Biblioteca padrão do Pico
+    hardware_i2c      # Driver I2C do Pico SDK
+    hardware_pwm      # Driver PWM do Pico SDK
+    hardware_pio      # Driver PIO do Pico SDK
+    hardware_adc      # Driver ADC do Pico SDK
 )
 
-#Habilita saída padrão via USB e UART
-pico_enable_stdio_usb(RTOS_Mutex_Semaforo 1)
-pico_enable_stdio_uart(RTOS_Mutex_Semaforo 1)
+# Habilita saída padrão (printf) via USB e UART
+pico_enable_stdio_usb(pico_sensores_luz_cor 1)
+pico_enable_stdio_uart(pico_sensores_luz_cor 1)
 
-#Gera arquivos adicionais (binário, UF2, etc.)
-pico_add_extra_outputs(RTOS_Mutex_Semaforo)
+# Gera arquivos adicionais (binário, UF2, etc.) para a placa
+pico_add_extra_outputs(pico_sensores_luz_cor)

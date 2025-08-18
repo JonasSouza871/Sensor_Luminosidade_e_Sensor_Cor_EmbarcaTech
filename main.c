@@ -1,367 +1,217 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
-#include "hardware/pwm.h"                
-#include "FreeRTOS.h"
-#include "task.h"
-#include "semphr.h"
-#include "queue.h"
-#include "hardware/gpio.h"
 #include "hardware/i2c.h"
-#include "lib/Display_Bibliotecas/ssd1306.h"
-#include "lib/Matriz_Bibliotecas/matriz_led.h"
+#include "hardware/gpio.h"
+#include "pico/bootrom.h"
 
-/* --------------------------------------------------------------------------- */
-/* 1. Mapeamento de hardware                                                   */
-/* --------------------------------------------------------------------------- */
-#define PINO_BTN_ENTRADA      5     // Botão A
-#define PINO_BTN_SAIDA        6     // Botão B
-#define PINO_JOYSTICK_RESET   22
-#define MAX_USUARIOS          10
+#define botaoB 6 // Utilizado para o BOOTSEL
 
-/* Display OLED (SSD1306) */
-#define I2C_PORT              i2c1
-#define I2C_SDA               14
-#define I2C_SCL               15
-#define OLED_ENDERECO         0x3C
-#define OLED_LARGURA          128
-#define OLED_ALTURA           64
+// Definições do sensor GY-33
+#define GY33_I2C_ADDR 0x29
+#define I2C_PORT i2c0
+#define SDA_PIN 0
+#define SCL_PIN 1
 
-/* LED RGB (anodos separados) */
-#define PINO_LED_VERDE        11
-#define PINO_LED_AZUL         12
-#define PINO_LED_VERMELHO     13
+// Definições dos Pinos
+const uint BTN_A_PIN = 5;
+const uint RED_PIN = 13;
+const uint GREEN_PIN = 11;
+const uint BLUE_PIN = 12;
 
-/* BUZZER piezo (PWM) */
-#define PINO_BUZZER           10
-#define PWM_FREQUENCIA_BUZZER 2000   // 2 kHz
+// Variáveis de Controle
+volatile int led_state = 0;
+volatile uint32_t last_press_time = 0;
 
-/* --------------------------------------------------------------------------- */
-/* 2. Tipos, enuns e tamanhos de filas                                         */
-/* --------------------------------------------------------------------------- */
-typedef enum {
-    CMD_ATUALIZAR_TELA,
-    CMD_MOSTRAR_MSG_RESET,
-    CMD_OCULTAR_MSG_RESET,
-    CMD_ALTERNAR_TELA
-} comando_display_t;
-
-#define TAM_FILA_DISPLAY      5
-
-/* --------------------------------------------------------------------------- */
-/* 3. Variáveis globais protegidas por mutex                                   */
-/* --------------------------------------------------------------------------- */
-volatile uint8_t  usuarios_ativos   = 0;    // 0-10
-volatile uint32_t total_resets      = 0;
-volatile bool     mostrar_msg_reset = false;
-volatile bool     tela_stats_ativa  = true; // true = Estatísticas, false = Avatares
-
-/* --------------------------------------------------------------------------- */
-/* 4.  FreeRTOS (mutexes, semáforos, filas)                                    */
-/* --------------------------------------------------------------------------- */
-static SemaphoreHandle_t mtx_usuarios;
-static SemaphoreHandle_t mtx_oled;
-static SemaphoreHandle_t sem_reset_irq;
-static SemaphoreHandle_t sem_vagas;        // counting semaphore
-static QueueHandle_t     fila_display;
-
-/* --------------------------------------------------------------------------- */
-/* 5. Instâncias e utilidades                                                  */
-/* --------------------------------------------------------------------------- */
-static ssd1306_t oled;
-
-static uint slice_buzzer;
-static uint channel_buzzer;
-
-/* Aciona / desliga o PWM do buzzer */
-static inline void buzzer_on(void)  { pwm_set_enabled(slice_buzzer, true);  }
-static inline void buzzer_off(void) { pwm_set_enabled(slice_buzzer, false); }
-
-/* --------------------------------------------------------------------------- */
-/* 6. Utilitário de cor p/ matriz 5×5                                          */
-/* --------------------------------------------------------------------------- */
-static uint32_t cor_para_numero(uint8_t n)
-{
-    const uint32_t paleta[] = {
-        COR_AZUL, COR_VERDE, COR_LARANJA, COR_VIOLETA, COR_OURO,
-        COR_PRATA, COR_MARROM, COR_BRANCO, COR_CINZA, COR_AMARELO
-    };
-    return (n < 10) ? paleta[n] : COR_VERMELHO;
-}
-
-/* --------------------------------------------------------------------------- */
-/* 7. Rotina central de desenho + feedback visual                              */
-/* --------------------------------------------------------------------------- */
-static void desenhar_tela(void)
-{
-    /* ----- Desenho no OLED -------------------------------------------------- */
-    if (xSemaphoreTake(mtx_oled, pdMS_TO_TICKS(100)) == pdTRUE) {
-        ssd1306_fill(&oled, false);
-
-        if (tela_stats_ativa) {
-            /* TELA 1 – Estatísticas */
-            char buf[4][32];
-            sprintf(buf[0], "Usuarios: %d/%d", usuarios_ativos, MAX_USUARIOS);
-
-            if      (usuarios_ativos == 0)                 sprintf(buf[1], "Estado: VAZIO");
-            else if (usuarios_ativos == MAX_USUARIOS)      sprintf(buf[1], "Estado: LOTADO");
-            else if (usuarios_ativos == MAX_USUARIOS-1)    sprintf(buf[1], "Estado: ENCHENDO");
-            else                                           sprintf(buf[1], "Estado: NORMAL");
-
-            const char *cor_txt = (usuarios_ativos==0)          ? "AZUL"    :
-                                  (usuarios_ativos<=MAX_USUARIOS-2)? "VERDE"   :
-                                  (usuarios_ativos==MAX_USUARIOS-1)? "AMARELO" : "VERMELHO";
-            sprintf(buf[2], "LED: %s", cor_txt);
-            sprintf(buf[3], "Resets: %ld", total_resets);
-
-            for (uint8_t i = 0; i < 4; ++i)
-                ssd1306_draw_string(&oled, buf[i], 2, 2 + 12*i, false);
-
-            if (mostrar_msg_reset)
-                ssd1306_draw_string(&oled, "** RESETADO! **", 15, 52, false);
-        } else {
-            /* TELA 2 – Avatares */
-            const uint8_t L = 12, ESP = 8, P_ROW = 5;
-            const uint8_t largura_linha = P_ROW*L + (P_ROW-1)*ESP;
-            const int margem_x   = (OLED_LARGURA - largura_linha)/2;
-            const int y_superior = (OLED_ALTURA/4)  - L/2;
-            const int y_inferior = (OLED_ALTURA*3/4) - L/2;
-
-            for (uint8_t i = 0; i < usuarios_ativos && i < MAX_USUARIOS; ++i) {
-                int x = margem_x + (i % P_ROW)*(L+ESP);
-                int y = (i < P_ROW) ? y_superior : y_inferior;
-                ssd1306_rect(&oled, y, x, L, L, true, true);
-            }
-        }
-        ssd1306_send_data(&oled);
-        xSemaphoreGive(mtx_oled);
+// Função de Callback da Interrupção
+void gpio_irq_handler(uint gpio, uint32_t events) {
+    if (gpio == botaoB) {
+        reset_usb_boot(0, 0);
     }
-
-    /* ----- Feedback LED RGB ------------------------------------------------- */
-    bool azul     = (usuarios_ativos == 0);
-    bool verde    = (usuarios_ativos > 0 && usuarios_ativos <= MAX_USUARIOS-2);  // 1-8: só verde
-    bool amarelo  = (usuarios_ativos == MAX_USUARIOS-1);                         // 9: verde + vermelho
-    bool vermelho_puro = (usuarios_ativos == MAX_USUARIOS);                      // 10: só vermelho
-
-    gpio_put(PINO_LED_AZUL,     azul);
-    gpio_put(PINO_LED_VERDE,    verde || amarelo);        // Verde ligado em 1-8 e 9
-    gpio_put(PINO_LED_VERMELHO, amarelo || vermelho_puro); // Vermelho ligado em 9 e 10
-
-    /* ----- Feedback matriz 5×5 --------------------------------------------- */
-    if (usuarios_ativos == MAX_USUARIOS)
-        matriz_draw_pattern(PAD_X, COR_VERMELHO);          // lotado
-    else
-        matriz_draw_number(usuarios_ativos, cor_para_numero(usuarios_ativos));
-}
-
-/* --------------------------------------------------------------------------- */
-/* 8. Interrupção do joystick (RESET)                                          */
-/* --------------------------------------------------------------------------- */
-static volatile uint32_t ultimo_irq_ms = 0;
-static const uint32_t   debounce_ms   = 400;
-
-static void irq_joystick(uint gpio, uint32_t eventos)
-{
-    uint32_t agora = to_ms_since_boot(get_absolute_time());
-    if (agora - ultimo_irq_ms < debounce_ms) return;
-    ultimo_irq_ms = agora;
-
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    xSemaphoreGiveFromISR(sem_reset_irq, &xHigherPriorityTaskWoken);
-    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
-}
-
-/* --------------------------------------------------------------------------- */
-/* 9. Tasks FreeRTOS                                                          */
-/* --------------------------------------------------------------------------- */
-
-/* Botão A – Entrada --------------------------------------------------------- */
-static void task_entrada(void *arg)
-{
-    bool estado_ant = true;
-
-    while (1) {
-        bool estado_atual = gpio_get(PINO_BTN_ENTRADA);
-
-        if (estado_ant && !estado_atual) {
-            vTaskDelay(pdMS_TO_TICKS(50));                 // debounce
-
-            if (!gpio_get(PINO_BTN_ENTRADA)) {
-                if (xSemaphoreTake(sem_vagas, 0) == pdTRUE) {
-                    xSemaphoreTake(mtx_usuarios, portMAX_DELAY);
-                    ++usuarios_ativos;
-                    xSemaphoreGive(mtx_usuarios);
-
-                    comando_display_t cmd = CMD_ATUALIZAR_TELA;
-                    xQueueSendToBack(fila_display, &cmd, 0);
-                } else {
-                    /* Beep curto – sistema lotado */
-                    buzzer_on();
-                    vTaskDelay(pdMS_TO_TICKS(100));
-                    buzzer_off();
-                }
-
-                while (!gpio_get(PINO_BTN_ENTRADA))
-                    vTaskDelay(pdMS_TO_TICKS(10));
-            }
-        }
-        estado_ant = estado_atual;
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-}
-
-/* Botão B – Saída ----------------------------------------------------------- */
-static void task_saida(void *arg)
-{
-    bool estado_ant = true;
-
-    while (1) {
-        bool estado_atual = gpio_get(PINO_BTN_SAIDA);
-
-        if (estado_ant && !estado_atual) {
-            vTaskDelay(pdMS_TO_TICKS(50));
-
-            if (!gpio_get(PINO_BTN_SAIDA)) {
-                xSemaphoreTake(mtx_usuarios, portMAX_DELAY);
-
-                if (usuarios_ativos > 0) {
-                    --usuarios_ativos;
-                    xSemaphoreGive(sem_vagas);
-                }
-
-                xSemaphoreGive(mtx_usuarios);
-
-                comando_display_t cmd = CMD_ATUALIZAR_TELA;
-                xQueueSendToBack(fila_display, &cmd, 0);
-
-                while (!gpio_get(PINO_BTN_SAIDA))
-                    vTaskDelay(pdMS_TO_TICKS(10));
-            }
-        }
-        estado_ant = estado_atual;
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-}
-
-/* RESET via joystick -------------------------------------------------------- */
-static void task_reset(void *arg)
-{
-    comando_display_t cmd_show  = CMD_MOSTRAR_MSG_RESET;
-    comando_display_t cmd_clear = CMD_OCULTAR_MSG_RESET;
-
-    while (1) {
-        if (xSemaphoreTake(sem_reset_irq, portMAX_DELAY) == pdTRUE) {
-            xSemaphoreTake(mtx_usuarios, portMAX_DELAY);
-
-            for (uint8_t i = 0; i < usuarios_ativos; ++i) xSemaphoreGive(sem_vagas);
-            usuarios_ativos = 0;
-            ++total_resets;
-
-            xSemaphoreGive(mtx_usuarios);
-
-            /* Beep duplo */
-            for (uint8_t i = 0; i < 2; ++i) {
-                buzzer_on();
-                vTaskDelay(pdMS_TO_TICKS(100));
-                buzzer_off();
-                vTaskDelay(pdMS_TO_TICKS(100));
-            }
-
-            xQueueSendToBack(fila_display, &cmd_show, 0);
-            vTaskDelay(pdMS_TO_TICKS(2000));
-            xQueueSendToBack(fila_display, &cmd_clear, 0);
+    else if (gpio == BTN_A_PIN) {
+        uint32_t current_time = to_ms_since_boot(get_absolute_time());
+        if (current_time - last_press_time > 250) {
+            last_press_time = current_time;
+            led_state = (led_state + 1) % 4;
         }
     }
 }
 
-/* Alternar tela ------------------------------------------------------------- */
-static void task_alternar_tela(void *arg)
-{
-    comando_display_t cmd = CMD_ALTERNAR_TELA;
-    while (1) {
-        vTaskDelay(pdMS_TO_TICKS(2000));
-        xQueueSendToBack(fila_display, &cmd, 0);
-    }
+// Registros do sensor
+#define ENABLE_REG 0x80
+#define ATIME_REG 0x81
+#define CONTROL_REG 0x8F
+#define ID_REG 0x92
+#define STATUS_REG 0x93
+#define CDATA_REG 0x94
+#define RDATA_REG 0x96
+#define GDATA_REG 0x98
+#define BDATA_REG 0x9A
+
+// Funções do sensor GY-33
+void gy33_write_register(uint8_t reg, uint8_t value) {
+    uint8_t buffer[2] = {reg, value};
+    i2c_write_blocking(I2C_PORT, GY33_I2C_ADDR, buffer, 2, false);
 }
 
-/* Consumidora da fila ------------------------------------------------------- */
-static void task_display(void *arg)
-{
-    comando_display_t cmd;
+uint16_t gy33_read_register(uint8_t reg) {
+    uint8_t buffer[2];
+    i2c_write_blocking(I2C_PORT, GY33_I2C_ADDR, &reg, 1, true);
+    i2c_read_blocking(I2C_PORT, GY33_I2C_ADDR, buffer, 2, false);
+    return (buffer[1] << 8) | buffer[0];
+}
 
-    while (1) {
-        if (xQueueReceive(fila_display, &cmd, portMAX_DELAY) == pdPASS) {
-            switch (cmd) {
-                case CMD_ATUALIZAR_TELA:        desenhar_tela(); break;
-                case CMD_MOSTRAR_MSG_RESET:     mostrar_msg_reset = true;  desenhar_tela(); break;
-                case CMD_OCULTAR_MSG_RESET:     mostrar_msg_reset = false; desenhar_tela(); break;
-                case CMD_ALTERNAR_TELA:         tela_stats_ativa = !tela_stats_ativa;       desenhar_tela(); break;
-            }
+void gy33_init() {
+    gy33_write_register(ENABLE_REG, 0x03);
+    gy33_write_register(ATIME_REG, 0xF5);
+    gy33_write_register(CONTROL_REG, 0x00);
+}
+
+void gy33_read_color(uint16_t *r, uint16_t *g, uint16_t *b, uint16_t *c) {
+    *c = gy33_read_register(CDATA_REG);
+    *r = gy33_read_register(RDATA_REG);
+    *g = gy33_read_register(GDATA_REG);
+    *b = gy33_read_register(BDATA_REG);
+}
+
+// Função para identificar a cor com limiares ajustados
+const char* identificar_cor(uint16_t r, uint16_t g, uint16_t b, uint16_t c) {
+    // Se não houver luz suficiente, retorna sem cor
+    if (c < 40) return "---";
+    
+    // Calcula as proporções relativas
+    float total = r + g + b;
+    if (total == 0) return "---";
+    
+    float rn = r / total;
+    float gn = g / total;
+    float bn = b / total;
+    
+    // --- Lógica de detecção de cores ajustada ---
+    // A ordem das verificações é importante para evitar sobreposições.
+
+    // Vermelho: componente vermelho é o mais dominante e significativamente maior que o verde.
+    if (rn > 0.42 && r > (g * 1.3) && rn > bn) {
+        return "Vermelho";
+    }
+    // Amarelo: vermelho e verde altos e próximos, azul baixo
+    if (rn > 0.38 && gn > 0.30 && bn < 0.28 && r < (g * 1.4)) {
+        return "Amarelo";
+    }
+    // Verde: componente verde dominante
+    if (gn > rn && gn > bn && g > 20) {
+        return "Verde";
+    }
+    // Azul: componente azul dominante
+    if (bn > rn && bn > gn && b > 20) {
+        return "Azul";
+    }
+    // Laranja: vermelho mais alto que verde, azul baixo
+    if (rn > 0.45 && gn > 0.25 && gn < rn && bn < 0.2 && r > 20) {
+        return "Laranja";
+    }
+    // Branco: todos os componentes altos e equilibrados
+    if (r > 80 && g > 80 && b > 80 && c > 200) {
+        // Verifica se as proporções estão próximas
+        if ( (rn > gn - 0.1 && rn < gn + 0.1) && (gn > bn - 0.1 && gn < bn + 0.1) ) {
+            return "Branco";
         }
     }
+     // Cinza/Prata: componentes equilibrados com brilho médio
+    if (c > 100 && c < 500) {
+        if ( (rn > gn - 0.1 && rn < gn + 0.1) && (gn > bn - 0.1 && gn < bn + 0.1) ) {
+            return "Cinza/Prata";
+        }
+    }
+    // Marrom: vermelho e verde moderados, azul baixo
+    if (rn > 0.4 && gn > 0.3 && bn < 0.3 && r > 30 && g > 20 && c < 200) {
+        return "Marrom";
+    }
+    // Violeta: vermelho e azul altos, verde baixo
+    if (rn > 0.3 && bn > 0.3 && gn < 0.3 && r > 15 && b > 15) {
+        return "Violeta";
+    }
+    // Ouro: vermelho e verde altos, azul baixo, e alto brilho
+    if (rn > 0.4 && gn > 0.3 && bn < 0.2 && c > 500) {
+        return "Ouro";
+    }
+    
+    return "Desconhecido";
 }
 
-/* --------------------------------------------------------------------------- */
-/* 10. Configuração inicial (main)                                             */
-/* --------------------------------------------------------------------------- */
-int main(void)
-{
+int main() {
+    // Configuração do BOOTSEL
+    gpio_init(botaoB);
+    gpio_set_dir(botaoB, GPIO_IN);
+    gpio_pull_up(botaoB);
+    gpio_set_irq_enabled_with_callback(botaoB, GPIO_IRQ_EDGE_FALL, true, &gpio_irq_handler);
+    
     stdio_init_all();
+    sleep_ms(2000);
+    
+    // Configuração dos LEDs
+    gpio_init(RED_PIN);
+    gpio_init(GREEN_PIN);
+    gpio_init(BLUE_PIN);
+    gpio_set_dir(RED_PIN, GPIO_OUT);
+    gpio_set_dir(GREEN_PIN, GPIO_OUT);
+    gpio_set_dir(BLUE_PIN, GPIO_OUT);
+    
+    // Configuração do Botão A
+    gpio_init(BTN_A_PIN);
+    gpio_set_dir(BTN_A_PIN, GPIO_IN);
+    gpio_pull_up(BTN_A_PIN);
+    gpio_set_irq_enabled_with_callback(BTN_A_PIN, GPIO_IRQ_EDGE_FALL, true, &gpio_irq_handler);
+    
+    // Inicialização do sensor
+    i2c_init(I2C_PORT, 100 * 1000);
+    gpio_set_function(SDA_PIN, GPIO_FUNC_I2C);
+    gpio_set_function(SCL_PIN, GPIO_FUNC_I2C);
+    gpio_pull_up(SDA_PIN);
+    gpio_pull_up(SCL_PIN);
+    printf("Iniciando GY-33...\n");
+    gy33_init();
+    
+    while (1) {
+        uint16_t r, g, b, c;
+        gy33_read_color(&r, &g, &b, &c);
+        
+        // Identifica a cor
+        const char* nome_cor = identificar_cor(r, g, b, c);
+        
+        // Imprime informações no console serial
+        printf("Cor detectada: %s\n", nome_cor);
+        printf("Valores RGB - R: %d, G: %d, B: %d, Clear: %d\n", r, g, b, c);
 
-    /* I²C + OLED */
-    i2c_init(I2C_PORT, 400000);
-    gpio_set_function(I2C_SDA, GPIO_FUNC_I2C);
-    gpio_set_function(I2C_SCL, GPIO_FUNC_I2C);
-    gpio_pull_up(I2C_SDA);  gpio_pull_up(I2C_SCL);
-
-    ssd1306_init(&oled, OLED_LARGURA, OLED_ALTURA, false, OLED_ENDERECO, I2C_PORT);
-    ssd1306_config(&oled);
-
-    /* Matriz 5×5 */
-    inicializar_matriz_led();
-
-    /* LEDs */
-    gpio_init(PINO_LED_VERDE);    gpio_set_dir(PINO_LED_VERDE, GPIO_OUT);
-    gpio_init(PINO_LED_AZUL);     gpio_set_dir(PINO_LED_AZUL,  GPIO_OUT);
-    gpio_init(PINO_LED_VERMELHO); gpio_set_dir(PINO_LED_VERMELHO, GPIO_OUT);
-
-    /* Buzzer PWM */
-    gpio_set_function(PINO_BUZZER, GPIO_FUNC_PWM);
-    slice_buzzer   = pwm_gpio_to_slice_num(PINO_BUZZER);
-    channel_buzzer = pwm_gpio_to_channel(PINO_BUZZER);
-
-    pwm_set_clkdiv(slice_buzzer, 125.0f);                 // 125 MHz / 125 = 1 MHz
-    uint32_t wrap = (1000000 / PWM_FREQUENCIA_BUZZER) - 1;/* 1 MHz base */
-    pwm_set_wrap(slice_buzzer, wrap);
-    pwm_set_chan_level(slice_buzzer, channel_buzzer, wrap / 2); /* 50 % duty */
-    pwm_set_enabled(slice_buzzer, false);                 /* inicia desligado */
-
-    /* Botões / Joystick */
-    gpio_init(PINO_BTN_ENTRADA);  gpio_set_dir(PINO_BTN_ENTRADA, GPIO_IN); gpio_pull_up(PINO_BTN_ENTRADA);
-    gpio_init(PINO_BTN_SAIDA);    gpio_set_dir(PINO_BTN_SAIDA,   GPIO_IN); gpio_pull_up(PINO_BTN_SAIDA);
-
-    gpio_init(PINO_JOYSTICK_RESET);
-    gpio_set_dir(PINO_JOYSTICK_RESET, GPIO_IN); gpio_pull_up(PINO_JOYSTICK_RESET);
-    gpio_set_irq_enabled_with_callback(PINO_JOYSTICK_RESET, GPIO_IRQ_EDGE_FALL, true, &irq_joystick);
-
-    /* Sincronização */
-    mtx_usuarios  = xSemaphoreCreateMutex();
-    mtx_oled      = xSemaphoreCreateMutex();
-    sem_reset_irq = xSemaphoreCreateBinary();
-    sem_vagas     = xSemaphoreCreateCounting(MAX_USUARIOS, MAX_USUARIOS);
-    fila_display  = xQueueCreate(TAM_FILA_DISPLAY, sizeof(comando_display_t));
-
-    configASSERT(mtx_usuarios && mtx_oled && sem_reset_irq && sem_vagas && fila_display);
-
-    /* UI inicial */
-    desenhar_tela();
-
-    /* Tasks */
-    xTaskCreate(task_entrada,        "Entrada",      1024, NULL, 2, NULL);
-    xTaskCreate(task_saida,          "Saida",        1024, NULL, 2, NULL);
-    xTaskCreate(task_reset,          "Reset",        1024, NULL, 3, NULL);
-    xTaskCreate(task_alternar_tela,  "AlternarTela", 1024, NULL, 1, NULL);
-    xTaskCreate(task_display,        "Display",      1024, NULL, 2, NULL);
-
-    vTaskStartScheduler();
-    while (1);   /* nunca deve chegar aqui */
+        // Evita divisão por zero se todos os valores forem 0
+        if ((r + g + b) > 0) {
+            printf("Proporcoes - R: %.2f, G: %.2f, B: %.2f\n", 
+               r/(float)(r+g+b), g/(float)(r+g+b), b/(float)(r+g+b));
+        }
+        
+        printf("--------------------------------\n");
+        
+        // Controla o LED RGB conforme o estado
+        if (led_state == 0) { // Vermelho
+            gpio_put(RED_PIN, 1);
+            gpio_put(GREEN_PIN, 0);
+            gpio_put(BLUE_PIN, 0);
+        }
+        else if (led_state == 1) { // Amarelo
+            gpio_put(RED_PIN, 1);
+            gpio_put(GREEN_PIN, 1);
+            gpio_put(BLUE_PIN, 0);
+        }
+        else if (led_state == 2) { // Verde
+            gpio_put(RED_PIN, 0);
+            gpio_put(GREEN_PIN, 1);
+            gpio_put(BLUE_PIN, 0);
+        }
+        else { // Azul
+            gpio_put(RED_PIN, 0);
+            gpio_put(GREEN_PIN, 0);
+            gpio_put(BLUE_PIN, 1);
+        }
+        
+        sleep_ms(1000);
+    }
 }
