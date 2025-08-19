@@ -42,6 +42,7 @@ include_directories(
     ${CMAKE_SOURCE_DIR}/lib
     ${CMAKE_SOURCE_DIR}/lib/Display_Bibliotecas
     ${CMAKE_SOURCE_DIR}/lib/Matriz_Bibliotecas
+    ${CMAKE_SOURCE_DIR}/lib/GY33_Biblioteca # Adicionado para a nova biblioteca
 )
 
 # Cria o executável com os arquivos fonte
@@ -49,6 +50,7 @@ add_executable(pico_sensores_luz_cor
     main.c
     lib/Display_Bibliotecas/ssd1306.c
     lib/Matriz_Bibliotecas/matriz_led.c
+    lib/gy33.c # Adicionado o ficheiro .c da nova biblioteca
 )
 
 # Vincula as bibliotecas necessárias ao executável
