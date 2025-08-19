@@ -4,6 +4,7 @@
 #include "hardware/i2c.h"
 #include "hardware/gpio.h"
 #include "ssd1306.h" // Incluindo a biblioteca do seu display
+#include "matriz_led.h" // Incluindo a biblioteca da sua matriz de LEDs
 
 // --- Definições do Sensor GY-33 ---
 #define GY33_I2C_ADDR 0x29
@@ -28,6 +29,15 @@
 #define I2C1_SDA_PIN 14 // Pino GP14 para SDA do display
 #define I2C1_SCL_PIN 15 // Pino GP15 para SCL do display
 
+// --- Registros do Sensor GY-33 ---
+#define ENABLE_REG 0x80
+#define ATIME_REG 0x81
+#define CONTROL_REG 0x8F
+#define CDATA_REG 0x94
+#define RDATA_REG 0x96
+#define GDATA_REG 0x98
+#define BDATA_REG 0x9A
+
 // --- Variáveis de Controle ---
 volatile int display_state = 0; // 0 para tela RGB, 1 para tela Normalizada
 volatile uint32_t last_press_time = 0; // Para debouncing dos botões
@@ -46,17 +56,6 @@ void gpio_irq_handler(uint gpio, uint32_t events) {
         display_state = (display_state - 1 + 2) % 2; // Alterna entre 1 e 0
     }
 }
-
-// --- Registros do Sensor (sem alterações) ---
-#define ENABLE_REG 0x80
-#define ATIME_REG 0x81
-#define CONTROL_REG 0x8F
-#define ID_REG 0x92
-#define STATUS_REG 0x93
-#define CDATA_REG 0x94
-#define RDATA_REG 0x96
-#define GDATA_REG 0x98
-#define BDATA_REG 0x9A
 
 // --- Funções do Sensor GY-33 (sem alterações) ---
 void gy33_write_register(uint8_t reg, uint8_t value) {
@@ -83,68 +82,27 @@ void gy33_read_color(uint16_t *r, uint16_t *g, uint16_t *b, uint16_t *c) {
 
 // --- Função para identificar a cor (LÓGICA FINAL RECALIBRADA) ---
 const char* identificar_cor(uint16_t r, uint16_t g, uint16_t b, uint16_t c) {
-    // Limiar de luz. Se a leitura for muito escura, não tenta adivinhar.
     if (c < 30) return "---";
-    
     float total = r + g + b;
     if (total == 0) return "---";
-    
     float rn = r / total;
     float gn = g / total;
     float bn = b / total;
-
-    // Calcula o rácio Vermelho/Verde, que é a chave para diferenciar tons quentes.
-    // Evita divisão por zero.
     float rg_ratio = (g > 0) ? (float)r / (float)g : 99.0; 
 
-    // A ORDEM DE VERIFICAÇÃO É CRÍTICA
-    
-    // Lógica para Vermelho e Laranja
-    if (rg_ratio > 1.15) { // Limiar ajustado para capturar a laranja de forma mais consistente
-        // Se a proporção de azul for muito baixa, é Laranja.
-        if (bn < 0.23) {
-            return "Laranja";
-        } 
-        // Caso contrário, é um Vermelho (como o da maçã, que é menos "puro").
-        else {
-            return "Vermelho";
-        }
+    if (rg_ratio > 1.15) {
+        if (bn < 0.23) return "Laranja";
+        else return "Vermelho";
     }
-
-    // Lógica para Amarelo (abrange o caso da banana onde G pode ser > R)
-    if (rg_ratio > 0.85 && rg_ratio <= 1.15) { // Limiar ajustado para criar uma fronteira mais clara
-        return "Amarelo";
-    }
-
-    // Verde: G é claramente dominante sobre R.
-    if (gn > rn && gn > bn) {
-        return "Verde";
-    }
-    // Azul: B é dominante.
-    if (bn > rn && bn > gn) {
-        return "Azul";
-    }
-    // Branco: todos os componentes altos e equilibrados
+    if (rg_ratio > 0.85 && rg_ratio <= 1.15) return "Amarelo";
+    if (gn > rn && gn > bn) return "Verde";
+    if (bn > rn && bn > gn) return "Azul";
     if (r > 80 && g > 80 && b > 80 && c > 200) {
         if ((rn > gn - 0.1 && rn < gn + 0.1) && (gn > bn - 0.1 && gn < bn + 0.1)) return "Branco";
     }
-    // Cinza/Prata: componentes equilibrados com brilho médio
     if (c > 100 && c < 500) {
-        if ((rn > gn - 0.1 && rn < gn + 0.1) && (gn > bn - 0.1 && gn < bn + 0.1)) return "Cinza/Prata";
+        if ((rn > gn - 0.1 && rn < gn + 0.1) && (gn > bn - 0.1 && gn < bn + 0.1)) return "Cinza";
     }
-    // Marrom: vermelho e verde moderados, azul baixo
-    if (rn > 0.4 && gn > 0.3 && bn < 0.3 && r > 30 && g > 20 && c < 200) {
-        return "Marrom";
-    }
-    // Violeta: vermelho e azul altos, verde baixo
-    if (rn > 0.3 && bn > 0.3 && gn < 0.3 && r > 15 && b > 15) {
-        return "Violeta";
-    }
-    // Ouro: vermelho e verde altos, azul baixo, e alto brilho
-    if (rn > 0.4 && gn > 0.3 && bn < 0.2 && c > 500) {
-        return "Ouro";
-    }
-    
     return "Desconhecido";
 }
 
@@ -159,7 +117,6 @@ void draw_screen_rgb(ssd1306_t *disp, uint16_t r, uint16_t g, uint16_t b, const 
     ssd1306_fill(disp, false);
     ssd1306_draw_string(disp, "--- Valores RGB ---", 5, 0, false);
     ssd1306_draw_string(disp, str_cor, 2, 12, false);
-    
     ssd1306_draw_string(disp, str_r, 5, 35, false);
     ssd1306_draw_string(disp, str_g, 5, 45, false);
     ssd1306_draw_string(disp, str_b, 5, 55, false);
@@ -168,7 +125,6 @@ void draw_screen_rgb(ssd1306_t *disp, uint16_t r, uint16_t g, uint16_t b, const 
 void draw_screen_normalized(ssd1306_t *disp, uint16_t r, uint16_t g, uint16_t b, const char* nome_cor) {
     char str_cor[32], str_rn[16], str_gn[16], str_bn[16];
     sprintf(str_cor, "Cor: %s", nome_cor);
-    
     float total = r + g + b;
     if (total > 0) {
         sprintf(str_rn, "R: %.1f%%", (r/total) * 100.0f);
@@ -183,12 +139,23 @@ void draw_screen_normalized(ssd1306_t *disp, uint16_t r, uint16_t g, uint16_t b,
     ssd1306_fill(disp, false);
     ssd1306_draw_string(disp, "- Normalizados (%) -", 5, 0, false);
     ssd1306_draw_string(disp, str_cor, 2, 12, false);
-
     ssd1306_draw_string(disp, str_rn, 5, 35, false);
     ssd1306_draw_string(disp, str_gn, 5, 45, false);
     ssd1306_draw_string(disp, str_bn, 5, 55, false);
 }
 
+// --- Função Auxiliar para a Matriz de LEDs ---
+// Procura o nome da cor na paleta e retorna o valor GRB correspondente.
+uint32_t get_grb_from_name(const char* nome_cor) {
+    // A sua biblioteca não define o tamanho da paleta, então calculamos aqui.
+    int num_cores = 12; // Número de cores na sua PALETA_CORES
+    for (int i = 0; i < num_cores; i++) {
+        if (strcmp(nome_cor, PALETA_CORES[i].nome) == 0) {
+            return GRB(PALETA_CORES[i].r, PALETA_CORES[i].g, PALETA_CORES[i].b);
+        }
+    }
+    return COR_OFF; // Retorna preto se a cor não for encontrada
+}
 
 // --- Função Principal ---
 int main() {
@@ -230,6 +197,11 @@ int main() {
     ssd1306_t disp;
     ssd1306_init(&disp, SSD1306_WIDTH, SSD1306_HEIGHT, false, SSD1306_I2C_ADDR, I2C1_PORT);
     ssd1306_config(&disp);
+    
+    // Inicializa a Matriz de LEDs
+    printf("Iniciando Matriz de LEDs WS2812...\n");
+    inicializar_matriz_led();
+
     ssd1306_fill(&disp, false);
     ssd1306_draw_string(&disp, "Iniciando...", 25, 25, false);
     ssd1306_send_data(&disp);
@@ -240,7 +212,13 @@ int main() {
         gy33_read_color(&r, &g, &b, &c);
         const char* nome_cor = identificar_cor(r, g, b, c);
         
-        // Desenha a tela apropriada com base no estado
+        // --- ATUALIZA A MATRIZ DE LEDS ---
+        uint32_t cor_matriz = get_grb_from_name(nome_cor);
+        for (int i = 0; i < NUM_PIXELS; ++i) {
+            pio_sm_put_blocking(pio0, 0, cor_matriz << 8u);
+        }
+        
+        // Desenha a tela apropriada no display com base no estado
         switch (display_state) {
             case 0:
                 draw_screen_rgb(&disp, r, g, b, nome_cor);
