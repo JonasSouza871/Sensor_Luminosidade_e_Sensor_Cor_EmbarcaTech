@@ -19,12 +19,6 @@ cmake_minimum_required(VERSION 3.13)
 # Inclui o SDK do Pico para encontrar as bibliotecas e funções necessárias
 include(pico_sdk_import.cmake)
 
-# --- Descrição do Projeto ---
-# Este projeto utiliza um microcontrolador Raspberry Pi Pico para identificar frutas
-# com base em suas cores. Ele emprega um sensor de cor (GY-33) e um sensor de 
-# luminosidade (GY-302) para capturar os dados. Os valores lidos são então 
-# comparados com um pequeno banco de dados pré-definido no código para classificar a fruta.
-
 # Define o nome do projeto
 project(pico_sensores_luz_cor C CXX ASM)
 

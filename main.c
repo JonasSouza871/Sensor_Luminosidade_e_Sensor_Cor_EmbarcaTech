@@ -34,7 +34,7 @@ void tratar_interrupcao_gpio(uint gpio, uint32_t events) {
     uint32_t tempo_atual = to_ms_since_boot(get_absolute_time());
     if (tempo_atual - ultimo_tempo_clique < 250) return; // Ignora cliques rápidos
     ultimo_tempo_clique = tempo_atual;
-    
+   
     if (gpio == BOTAO_B_PIN) {
         estado_display = (estado_display + 1) % 2; // Próxima tela
     } else if (gpio == BOTAO_A_PIN) {
@@ -78,12 +78,25 @@ void tocar_alerta(const char* nome_da_cor) {
 
 // Desenha a tela com valores RGB brutos
 void desenhar_tela_rgb(ssd1306_t *display, uint16_t r, uint16_t g, uint16_t b, const char* nome_da_cor) {
-    char str_cor[32], str_r[16], str_g[16], str_b[16];
+    char str_cor[32], str_r[16], str_g[16], str_b[16], str_alimento[32];
     sprintf(str_cor, "Cor: %s", nome_da_cor);
     sprintf(str_r, "R: %d", r); sprintf(str_g, "G: %d", g); sprintf(str_b, "B: %d", b);
+    
+    // Identificar alimento com base na cor
+    if (strcmp(nome_da_cor, "Vermelho") == 0) {
+        sprintf(str_alimento, "Alimento: Maca");
+    } else if (strcmp(nome_da_cor, "Laranja") == 0) {
+        sprintf(str_alimento, "Alimento: Laranja");
+    } else if (strcmp(nome_da_cor, "Amarelo") == 0) {
+        sprintf(str_alimento, "Alimento: Banana");
+    } else {
+        sprintf(str_alimento, "Alimento: N/A");
+    }
+    
     ssd1306_fill(display, false);
     ssd1306_draw_string(display, "--- Valores RGB ---", 5, 0, false);
     ssd1306_draw_string(display, str_cor, 2, 12, false);
+    ssd1306_draw_string(display, str_alimento, 2, 24, false); // Nova linha para alimento
     ssd1306_draw_string(display, str_r, 5, 35, false);
     ssd1306_draw_string(display, str_g, 5, 45, false);
     ssd1306_draw_string(display, str_b, 5, 55, false);
@@ -91,8 +104,20 @@ void desenhar_tela_rgb(ssd1306_t *display, uint16_t r, uint16_t g, uint16_t b, c
 
 // Desenha a tela com valores normalizados em percentagem
 void desenhar_tela_normalizada(ssd1306_t *display, uint16_t r, uint16_t g, uint16_t b, const char* nome_da_cor) {
-    char str_cor[32], str_rn[16], str_gn[16], str_bn[16];
+    char str_cor[32], str_rn[16], str_gn[16], str_bn[16], str_alimento[32];
     sprintf(str_cor, "Cor: %s", nome_da_cor);
+    
+    // Identificar alimento com base na cor
+    if (strcmp(nome_da_cor, "Vermelho") == 0) {
+        sprintf(str_alimento, "Fruta:Maca");
+    } else if (strcmp(nome_da_cor, "Laranja") == 0) {
+        sprintf(str_alimento, "Fruta:Laranja");
+    } else if (strcmp(nome_da_cor, "Amarelo") == 0) {
+        sprintf(str_alimento, "Fruta:Banana");
+    } else {
+        sprintf(str_alimento, "Fruta: N/A");
+    }
+    
     float soma_total = r + g + b;
     if (soma_total > 0) {
         sprintf(str_rn, "R: %.1f%%", (r/soma_total) * 100.0f);
@@ -104,6 +129,7 @@ void desenhar_tela_normalizada(ssd1306_t *display, uint16_t r, uint16_t g, uint1
     ssd1306_fill(display, false);
     ssd1306_draw_string(display, "- Normalizados (%) -", 5, 0, false);
     ssd1306_draw_string(display, str_cor, 2, 12, false);
+    ssd1306_draw_string(display, str_alimento, 2, 24, false); // Nova linha para alimento
     ssd1306_draw_string(display, str_rn, 5, 35, false);
     ssd1306_draw_string(display, str_gn, 5, 45, false);
     ssd1306_draw_string(display, str_bn, 5, 55, false);
@@ -129,7 +155,7 @@ int main() {
     // Inicialização da comunicação serial
     stdio_init_all();
     sleep_ms(2000);
-    
+   
     // Inicialização do Hardware
     // Barramento I2C 0 para o sensor
     i2c_init(I2C0_PORT, 100 * 1000);
@@ -137,20 +163,20 @@ int main() {
     gpio_set_function(I2C0_SCL_PIN, GPIO_FUNC_I2C);
     gpio_pull_up(I2C0_SDA_PIN);
     gpio_pull_up(I2C0_SCL_PIN);
-    
+   
     // Barramento I2C 1 para o display
     i2c_init(I2C1_PORT, 400 * 1000);
     gpio_set_function(I2C1_SDA_PIN, GPIO_FUNC_I2C);
     gpio_set_function(I2C1_SCL_PIN, GPIO_FUNC_I2C);
     gpio_pull_up(I2C1_SDA_PIN);
     gpio_pull_up(I2C1_SCL_PIN);
-    
+   
     // Botões
     gpio_init(BOTAO_A_PIN); gpio_set_dir(BOTAO_A_PIN, GPIO_IN); gpio_pull_up(BOTAO_A_PIN);
     gpio_init(BOTAO_B_PIN); gpio_set_dir(BOTAO_B_PIN, GPIO_IN); gpio_pull_up(BOTAO_B_PIN);
     gpio_set_irq_enabled_with_callback(BOTAO_A_PIN, GPIO_IRQ_EDGE_FALL, true, &tratar_interrupcao_gpio);
     gpio_set_irq_enabled_with_callback(BOTAO_B_PIN, GPIO_IRQ_EDGE_FALL, true, &tratar_interrupcao_gpio);
-    
+   
     // Inicialização dos Módulos
     gy33_init(I2C0_PORT);
     ssd1306_t display;
@@ -158,37 +184,37 @@ int main() {
     ssd1306_config(&display);
     inicializar_matriz_led();
     inicializar_buzzer();
-    
+   
     // Tela de boas-vindas
     ssd1306_fill(&display, false);
     ssd1306_draw_string(&display, "Iniciando...", 25, 25, false);
     ssd1306_send_data(&display);
     sleep_ms(1500);
-    
+   
     // Loop Infinito
     while (1) {
         // Lê os dados do sensor
         uint16_t r, g, b, c;
         gy33_read_color(I2C0_PORT, &r, &g, &b, &c);
         const char* nome_da_cor = identificar_cor(r, g, b, c);
-        
+       
         // Atualiza a matriz de LEDs
         uint32_t cor_da_matriz = obter_grb_pelo_nome(nome_da_cor);
         for (int i = 0; i < NUM_PIXELS; ++i) {
             pio_sm_put_blocking(pio0, 0, cor_da_matriz << 8u);
         }
-        
+       
         // Toca o alerta sonoro
         tocar_alerta(nome_da_cor);
-        
+       
         // Desenha a tela correta no display
         switch (estado_display) {
             case 0: desenhar_tela_rgb(&display, r, g, b, nome_da_cor); break;
             case 1: desenhar_tela_normalizada(&display, r, g, b, nome_da_cor); break;
         }
         ssd1306_send_data(&display);
-        
+       
         // Pausa para evitar som contínuo
-        sleep_ms(300); 
+        sleep_ms(300);
     }
 }
