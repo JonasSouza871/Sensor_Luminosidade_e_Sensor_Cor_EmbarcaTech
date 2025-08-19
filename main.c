@@ -80,7 +80,7 @@ void gy33_read_color(uint16_t *r, uint16_t *g, uint16_t *b, uint16_t *c) {
     *b = gy33_read_register(BDATA_REG);
 }
 
-// --- Função para identificar a cor (LÓGICA FINAL RECALIBRADA) ---
+// --- Função para identificar a cor (LÓGICA EXPANDIDA) ---
 const char* identificar_cor(uint16_t r, uint16_t g, uint16_t b, uint16_t c) {
     if (c < 30) return "---";
     float total = r + g + b;
@@ -88,21 +88,38 @@ const char* identificar_cor(uint16_t r, uint16_t g, uint16_t b, uint16_t c) {
     float rn = r / total;
     float gn = g / total;
     float bn = b / total;
-    float rg_ratio = (g > 0) ? (float)r / (float)g : 99.0; 
+    float rg_ratio = (g > 0) ? (float)r / (float)g : 99.0;
 
-    if (rg_ratio > 1.15) {
+    // --- Tons Quentes ---
+    if (rg_ratio > 1.15) { // Vermelho ou Laranja
         if (bn < 0.23) return "Laranja";
         else return "Vermelho";
     }
-    if (rg_ratio > 0.85 && rg_ratio <= 1.15) return "Amarelo";
+    if (rg_ratio > 0.85 && rg_ratio <= 1.15) { // Amarelo ou Ouro
+        if (c > 400) return "Ouro"; // Ouro é um amarelo mais brilhante
+        else return "Amarelo";
+    }
+
+    // --- Cores Primárias Frias ---
     if (gn > rn && gn > bn) return "Verde";
     if (bn > rn && bn > gn) return "Azul";
-    if (r > 80 && g > 80 && b > 80 && c > 200) {
-        if ((rn > gn - 0.1 && rn < gn + 0.1) && (gn > bn - 0.1 && gn < bn + 0.1)) return "Branco";
+
+    // --- Cores Secundárias e Terciárias ---
+    if (bn > 0.4 && rn > 0.3 && gn < 0.3) {
+        return "Violeta";
     }
-    if (c > 100 && c < 500) {
-        if ((rn > gn - 0.1 && rn < gn + 0.1) && (gn > bn - 0.1 && gn < bn + 0.1)) return "Cinza";
+    if (rg_ratio > 1.2 && c < 80 && c > 30) {
+        return "Marrom";
     }
+
+    // --- Tons Neutros (Branco, Prata, Cinza) ---
+    bool is_balanced = (rn > gn - 0.15 && rn < gn + 0.15) && (gn > bn - 0.15 && gn < bn + 0.15);
+    if (is_balanced) {
+        if (c > 600) return "Branco";
+        if (c > 300) return "Prata";
+        if (c > 80) return "Cinza";
+    }
+
     return "Desconhecido";
 }
 
@@ -145,16 +162,19 @@ void draw_screen_normalized(ssd1306_t *disp, uint16_t r, uint16_t g, uint16_t b,
 }
 
 // --- Função Auxiliar para a Matriz de LEDs ---
-// Procura o nome da cor na paleta e retorna o valor GRB correspondente.
+// Procura o nome da cor na paleta e retorna o valor GRB com brilho ajustado.
 uint32_t get_grb_from_name(const char* nome_cor) {
-    // A sua biblioteca não define o tamanho da paleta, então calculamos aqui.
-    int num_cores = 12; // Número de cores na sua PALETA_CORES
+    const int DIVISOR_BRILHO = 4;
+    int num_cores = 12;
     for (int i = 0; i < num_cores; i++) {
         if (strcmp(nome_cor, PALETA_CORES[i].nome) == 0) {
-            return GRB(PALETA_CORES[i].r, PALETA_CORES[i].g, PALETA_CORES[i].b);
+            uint8_t r = PALETA_CORES[i].r / DIVISOR_BRILHO;
+            uint8_t g = PALETA_CORES[i].g / DIVISOR_BRILHO;
+            uint8_t b = PALETA_CORES[i].b / DIVISOR_BRILHO;
+            return GRB(r, g, b);
         }
     }
-    return COR_OFF; // Retorna preto se a cor não for encontrada
+    return COR_OFF;
 }
 
 // --- Função Principal ---
@@ -162,21 +182,18 @@ int main() {
     stdio_init_all();
     sleep_ms(2000);
     
-    // Inicialização do I2C0 para o Sensor
     i2c_init(I2C0_PORT, 100 * 1000);
     gpio_set_function(I2C0_SDA_PIN, GPIO_FUNC_I2C);
     gpio_set_function(I2C0_SCL_PIN, GPIO_FUNC_I2C);
     gpio_pull_up(I2C0_SDA_PIN);
     gpio_pull_up(I2C0_SCL_PIN);
     
-    // Inicialização do I2C1 para o Display
     i2c_init(I2C1_PORT, 400 * 1000);
     gpio_set_function(I2C1_SDA_PIN, GPIO_FUNC_I2C);
     gpio_set_function(I2C1_SCL_PIN, GPIO_FUNC_I2C);
     gpio_pull_up(I2C1_SDA_PIN);
     gpio_pull_up(I2C1_SCL_PIN);
 
-    // Configuração dos Botões
     gpio_init(BTN_A_PIN);
     gpio_set_dir(BTN_A_PIN, GPIO_IN);
     gpio_pull_up(BTN_A_PIN);
@@ -184,22 +201,18 @@ int main() {
     gpio_set_dir(BTN_B_PIN, GPIO_IN);
     gpio_pull_up(BTN_B_PIN);
 
-    // Configuração das Interrupções dos Botões
     gpio_set_irq_enabled_with_callback(BTN_A_PIN, GPIO_IRQ_EDGE_FALL, true, &gpio_irq_handler);
     gpio_set_irq_enabled_with_callback(BTN_B_PIN, GPIO_IRQ_EDGE_FALL, true, &gpio_irq_handler);
     
-    // Inicializa o sensor de cor
     printf("Iniciando sensor de cor GY-33 no I2C0...\n");
     gy33_init();
 
-    // Inicializa o display SSD1306
     printf("Iniciando display SSD1306 no I2C1...\n");
     ssd1306_t disp;
     ssd1306_init(&disp, SSD1306_WIDTH, SSD1306_HEIGHT, false, SSD1306_I2C_ADDR, I2C1_PORT);
     ssd1306_config(&disp);
     
-    // Inicializa a Matriz de LEDs
-    printf("Iniciando Matriz de LEDs WS2812...\n");
+    printf("Iniciando Matriz de LEDs WS22812...\n");
     inicializar_matriz_led();
 
     ssd1306_fill(&disp, false);
@@ -212,13 +225,11 @@ int main() {
         gy33_read_color(&r, &g, &b, &c);
         const char* nome_cor = identificar_cor(r, g, b, c);
         
-        // --- ATUALIZA A MATRIZ DE LEDS ---
         uint32_t cor_matriz = get_grb_from_name(nome_cor);
         for (int i = 0; i < NUM_PIXELS; ++i) {
             pio_sm_put_blocking(pio0, 0, cor_matriz << 8u);
         }
         
-        // Desenha a tela apropriada no display com base no estado
         switch (display_state) {
             case 0:
                 draw_screen_rgb(&disp, r, g, b, nome_cor);
@@ -228,7 +239,6 @@ int main() {
                 break;
         }
 
-        // Atualiza a tela
         ssd1306_send_data(&disp);
         sleep_ms(200);
     }
