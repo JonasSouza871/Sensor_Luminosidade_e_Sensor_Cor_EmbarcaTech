@@ -34,17 +34,6 @@ Utilizando um sensor de cor GY-33 e um sensor de luminosidade BH1750, o disposit
     -   Toca notas distintas para as cores associadas às frutas (Vermelho, Laranja, Amarelo).
     -   Emite um alerta especial e chamativo se a luminosidade estiver fora dos limites seguros (muito escuro ou muito claro).
 
----
-
-### 🖼 Galeria do Projeto
-
-| Display OLED em Operação | Matriz de LEDs Adaptativa |
-| :---: | :---: |
-| *[INSERIR FOTO DO DISPLAY MOSTRANDO DADOS]* | *[INSERIR FOTO DA MATRIZ DE LEDS ACESA]* |
-| Exibição dos dados de cor e luz em tempo real. | Matriz de LEDs mostrando a cor identificada. |
-
----
-
 ### ⚙ Hardware Necessário
 
 | Componente | Quant. | Observações |
