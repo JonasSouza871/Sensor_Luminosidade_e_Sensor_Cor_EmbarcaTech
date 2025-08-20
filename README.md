@@ -49,7 +49,7 @@ Utilizando um sensor de cor GY-33 e um sensor de luminosidade BH1750, o disposit
 
 | Componente | Quant. | Observações |
 | :--- | :---: | :--- |
-| Raspberry Pi Pico | 1 | O cérebro do projeto. |
+| Raspberry Pi Pico | 1 | O microcontrolador do projeto. |
 | Sensor de Cor GY-33 (TCS34725) | 1 | Para identificação de cores. |
 | Sensor de Luminosidade BH1750 | 1 | Para medir a luz ambiente em Lux. |
 | Display OLED 128x64 | 1 | Para a interface visual (I2C, SSD1306). |
